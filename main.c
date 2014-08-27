@@ -33,12 +33,12 @@
 #include <config.h>
 #endif
 
-/*#define DEBUG*/
+#define DEBUG
 
 #define ERROR(fmt, args...) fprintf(stderr, fmt, ## args)
 
 #ifdef DEBUG
-#define DBG(fmt, args...) fprintf(stderr, "%s:%-5d: " fmt, __FUNCTION__,
+#define DBG(fmt, args...) fprintf(stderr, "%s:%-5d: " fmt, __FUNCTION__,\
     __LINE__, ## args)
 #else
 #define DBG(fmt, args...) do {  } while(0)
@@ -87,6 +87,8 @@ static int revet = 0;
 
 static Window winRoot = 0;
 
+static gboolean init_done;
+
 /* ************************ header *************************** */
 static int init(void);
 
@@ -98,7 +100,7 @@ static GdkFilterReturn filter(XEvent *xev, GdkEvent *event, gpointer data);
 
 static void Xerror_handler(Display *d, XErrorEvent *ev);
 
-static GdkPixbuf *sym2flag(char *sym);
+static GdkPixbuf *sym2flag(const char *sym);
 
 static void sb_dock_create(void);
 
@@ -107,7 +109,7 @@ static gboolean my_str_equal(gchar *a, gchar *b)
 	return a[0] == b[0] && a[1] == b[1];
 }
 
-static GdkPixbuf *sym2flag(char *sym)
+static GdkPixbuf *sym2flag(const char *sym)
 {
 	GdkPixbuf *flag;
 	static GString *s = NULL;
@@ -158,23 +160,11 @@ static gboolean sb_dock_pressed(GtkStatusIcon *icon, GdkEvent *event,
 	}
 }
 
-static void icon_theme_on_changed(GtkIconTheme *icon_theme, gpointer user_data)
-{
-	update_flag(cur_group);
-}
-
 static void sb_dock_create(void)
 {
-	GtkIconTheme *icon_theme = gtk_icon_theme_get_default();
-	
-	g_signal_connect(G_OBJECT(icon_theme), "changed",
-	    G_CALLBACK(icon_theme_on_changed), NULL);
-	sb_dock = gtk_status_icon_new_from_icon_name("sbxkb");
-	gtk_status_icon_set_tooltip_text(sb_dock, "sbxkb");
+	sb_dock = gtk_status_icon_new();
 	g_signal_connect(G_OBJECT(sb_dock), "button-press-event",
 	    G_CALLBACK(sb_dock_pressed), NULL);
-	g_object_ref(G_OBJECT(sb_dock));
-	gtk_status_icon_set_visible(sb_dock, TRUE);
 }
 
 static void read_kbd_description(void)
@@ -319,6 +309,7 @@ static void update_flag(int no)
 	g_assert(k);
 	DBG("k->sym=%s\n", k->sym);
 	gtk_status_icon_set_from_pixbuf(sb_dock, k->flag);
+	gtk_status_icon_set_tooltip_text(sb_dock, k->sym);
 }
 
 static void sb_removed_window(int window)
@@ -357,7 +348,12 @@ static Window sb_get_focus(void)
 
 static GdkFilterReturn filter(XEvent *xev, GdkEvent *event, gpointer data)
 {
+	if (!init_done) {
+		return GDK_FILTER_CONTINUE;
+	}
+
 	if (xev->xany.type == DestroyNotify) {
+		DBG("destroy %x\n", xev->xdestroywindow.window);
 		sb_removed_window(xev->xdestroywindow.window);
 		return GDK_FILTER_REMOVE;
 	}
@@ -367,6 +363,7 @@ static GdkFilterReturn filter(XEvent *xev, GdkEvent *event, gpointer data)
 		/*g_return_val_if_fail (create, GDK_FILTER_REMOVE);*/
 
 		if (!create) {
+			DBG("!create %x\n", xev->xcreatewindow.window);
 			return GDK_FILTER_CONTINUE;
 		}
 
@@ -428,8 +425,9 @@ static GdkFilterReturn filter(XEvent *xev, GdkEvent *event, gpointer data)
 
 static int init(void)
 {
-	int dummy;
+	int dummy, retval;
 
+	retval = -1;
 	sym2pix = g_hash_table_new(g_str_hash, (GEqualFunc)my_str_equal);
 	stateWindow = g_hash_table_new(g_direct_hash, NULL);
 	dpy = gdk_x11_get_default_xdisplay();
@@ -440,24 +438,24 @@ static int init(void)
 
 	if (a_XKB_RULES_NAMES == None) {
 		ERROR("_XKB_RULES_NAMES - can't get this atom\n");
+	} else if (XkbQueryExtension(dpy, &dummy, &xkb_event_type, &dummy,
+		   &dummy, &dummy)) {
+		DBG("xkb_event_type=%d\n", xkb_event_type);
+		XkbSelectEventDetails(dpy, XkbUseCoreKbd, XkbStateNotify,
+		    XkbAllStateComponentsMask, XkbGroupStateMask);
+		gdk_window_add_filter(NULL, (GdkFilterFunc)filter, NULL);
+		null_flag = gdk_pixbuf_new_from_file(PACKAGE_DATA_DIR"/C.png",
+		    NULL);
+		retval = 0;
 	}
 
-	if (!XkbQueryExtension(dpy, &dummy, &xkb_event_type, &dummy, &dummy,
-	    &dummy)) {
-		return 0;
-	}
-
-	DBG("xkb_event_type=%d\n", xkb_event_type);
-	XkbSelectEventDetails(dpy, XkbUseCoreKbd, XkbStateNotify,
-	    XkbAllStateComponentsMask, XkbGroupStateMask);
-
-	gdk_window_add_filter(NULL, (GdkFilterFunc)filter, NULL);
-	null_flag = gdk_pixbuf_new_from_file(PACKAGE_DATA_DIR"/C.png", NULL);
-	return 1;
+	return retval;
 }
 
 int main(int argc, char *argv[], char *env[])
 {
+	int retval;
+
 	setlocale(LC_CTYPE, "");
 	gtk_init(&argc, &argv);
 	XSetLocaleModifiers("");
@@ -471,19 +469,22 @@ int main(int argc, char *argv[], char *env[])
 	}
 
 	DBG("image pefix = %s\n", image_pefix);
+	retval = init();
 
-	if (!init()) {
+	if (retval < 0) {
 		ERROR("can't init sbxkb. exiting\n");
+	} else {
+		read_kbd_description();
+		sb_dock_create();
+		update_flag(cur_group);
+		XSelectInput(dpy, (Window)winRoot, FocusChangeMask |
+		    SubstructureNotifyMask);
+		init_done = TRUE;
+		gtk_main();
+		retval = 0;
 	}
 
-	read_kbd_description();
-	sb_dock_create();
-	update_flag(cur_group);
-	XSelectInput(dpy, (Window)winRoot,
-	    FocusChangeMask | SubstructureNotifyMask);
-
-	gtk_main();
-	return 0;
+	return retval;
 }
 
 /********************************************************************/
