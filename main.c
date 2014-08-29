@@ -33,7 +33,7 @@
 #include <config.h>
 #endif
 
-#define DEBUG
+#undef DEBUG
 
 #define ERROR(fmt, args...) fprintf(stderr, fmt, ## args)
 
