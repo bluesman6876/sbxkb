@@ -19,7 +19,7 @@ AC_HEADER_STDC
 
 
 
-PKG_CHECK_MODULES(GDKLIB, gdk-pixbuf-2.0 gdk-pixbuf-xlib-2.0 gtk+-3.0)
+PKG_CHECK_MODULES(GDKLIB, gdk-pixbuf-2.0 gdk-pixbuf-xlib-2.0 gtk+-2.0)
 AC_OUTPUT([
 Makefile
 images/Makefile

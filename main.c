@@ -87,8 +87,6 @@ static int revet = 0;
 
 static Window winRoot = 0;
 
-static gboolean init_done;
-
 /* ************************ header *************************** */
 static int init(void);
 
@@ -329,9 +327,12 @@ static void sb_add_window(int window, int group)
 		g_hash_table_replace(stateWindow, GINT_TO_POINTER(window),
 		    GINT_TO_POINTER(group));
 	} else {
+		XWindowAttributes a;
+
+		XGetWindowAttributes(dpy, window, &a);
 		DBG("New window: %d\n", window);
 		focused_event.window = (Window)window;
-		XSelectInput(dpy, (Window)window,
+		XSelectInput(dpy, (Window)window, a.your_event_mask |
 		    FocusChangeMask | StructureNotifyMask);
 		XPutBackEvent(dpy, (XEvent *)&focused_event);
 		g_hash_table_insert(stateWindow, GINT_TO_POINTER(window),
@@ -348,41 +349,32 @@ static Window sb_get_focus(void)
 
 static GdkFilterReturn filter(XEvent *xev, GdkEvent *event, gpointer data)
 {
-	if (!init_done) {
-		return GDK_FILTER_CONTINUE;
-	}
-
-	if (xev->xany.type == DestroyNotify) {
-		DBG("destroy %x\n", xev->xdestroywindow.window);
+	switch (xev->type) {
+	case DestroyNotify:
 		sb_removed_window(xev->xdestroywindow.window);
-		return GDK_FILTER_REMOVE;
-	}
+		break;
 
-	if (xev->xany.type == CreateNotify) {
-		Window create = xev->xcreatewindow.window;
-		/*g_return_val_if_fail (create, GDK_FILTER_REMOVE);*/
+	case CreateNotify:
+		/*g_return_val_if_fail(xev->xcreatewindow.window, GDK_FILTER_REMOVE);*/
 
-		if (!create) {
-			DBG("!create %x\n", xev->xcreatewindow.window);
-			return GDK_FILTER_CONTINUE;
+		if (xev->xcreatewindow.window) {
+			DBG("Create window %d event\n",
+			    (int)xev->xcreatewindow.window);
+			sb_add_window(xev->xcreatewindow.window, default_group);
 		}
+		break;
 
-		DBG("Create window %d event\n", (int)create);
-		sb_add_window((int)create, default_group);
-		return GDK_FILTER_REMOVE;
-	}
-
-	if (xev->xany.type == FocusIn) {
+	case FocusIn:
 		sb_get_focus();
 		/*g_return_val_if_fail (focus, GDK_FILTER_REMOVE);*/
 
 		if (!focus) {
 			DBG("Assertion focus failed\n");
-			return GDK_FILTER_REMOVE;
+			return GDK_FILTER_CONTINUE;
 		}
 
 		if (focus == activeWindow) {
-			return GDK_FILTER_REMOVE;
+			return GDK_FILTER_CONTINUE;
 		}
 
 		activeWindow = focus;
@@ -396,28 +388,30 @@ static GdkFilterReturn filter(XEvent *xev, GdkEvent *event, gpointer data)
 		}
 
 		DBG("Focus %d, Lawout %d\n", (int)focus, h_group);
-		return GDK_FILTER_REMOVE;
-	} else if (xev->type == xkb_event_type) {
-		XkbEvent *xkbev = (XkbEvent *)xev;
-		DBG("XkbTypeEvent %d \n", xkbev->any.xkb_type);
+		break;
 
-		if (xkbev->any.xkb_type == XkbStateNotify) {
-			DBG("XkbStateNotify: %d\n", xkbev->state.group);
-			sb_get_focus();
-			activeWindow = focus;
-			cur_group = xkbev->state.group;
+	default:
+		if (xev->type == xkb_event_type) {
+			XkbEvent *xkbev = (XkbEvent *)xev;
+			DBG("XkbTypeEvent %d \n", xkbev->any.xkb_type);
 
-			if (cur_group < ngroups) {
+			if (xkbev->any.xkb_type == XkbStateNotify) {
+				DBG("XkbStateNotify: %d\n", xkbev->state.group);
+				sb_get_focus();
+				activeWindow = focus;
+				cur_group = xkbev->state.group;
+
+				if (cur_group < ngroups) {
+					update_flag(cur_group);
+					sb_add_window(focus, cur_group);
+				}
+			} else if (xkbev->any.xkb_type ==
+				   XkbNewKeyboardNotify) {
+				DBG("XkbNewKeyboardNotify\n");
+				read_kbd_description();
 				update_flag(cur_group);
-				sb_add_window(focus, cur_group);
 			}
-		} else if (xkbev->any.xkb_type == XkbNewKeyboardNotify) {
-			DBG("XkbNewKeyboardNotify\n");
-			read_kbd_description();
-			update_flag(cur_group);
 		}
-
-		return GDK_FILTER_REMOVE;
 	}
 
 	return GDK_FILTER_CONTINUE;
@@ -474,12 +468,15 @@ int main(int argc, char *argv[], char *env[])
 	if (retval < 0) {
 		ERROR("can't init sbxkb. exiting\n");
 	} else {
+		XWindowAttributes a;
+
+		XGetWindowAttributes(dpy, winRoot, &a);
 		read_kbd_description();
 		sb_dock_create();
 		update_flag(cur_group);
-		XSelectInput(dpy, (Window)winRoot, FocusChangeMask |
-		    SubstructureNotifyMask);
-		init_done = TRUE;
+		XGetWindowAttributes(dpy, winRoot, &a);
+		XSelectInput(dpy, (Window)winRoot, a.your_event_mask |
+		    FocusChangeMask | SubstructureNotifyMask);
 		gtk_main();
 		retval = 0;
 	}
